@@ -21,4 +21,5 @@ version = { attr = "pyci_doctor.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["fixtures", ".*", "build", "dist", "*.egg-info"]
 addopts = "-ra --strict-markers"
