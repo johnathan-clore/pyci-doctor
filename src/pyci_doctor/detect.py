@@ -52,24 +52,38 @@ def detect(project_dir: str | Path) -> ProjectProfile:
     dev_extra = _find_dev_extra(project_table)
     all_deps = _all_dependency_names(root, project_table)
 
-    if pyproject:
+    # pip can only install a project whose pyproject.toml describes a package:
+    # a [project] table (standard) or a [build-system] table (e.g. Poetry, Hatch).
+    # A pyproject.toml holding only tool settings, like [tool.pytest.ini_options], is not installable.
+    installable = "project" in pyproject or "build-system" in pyproject
+
+    install_args: list[str] = []
+    if installable:
         dependency_source = "pyproject"
-        install_command = 'python -m pip install -e ".[{}]"'.format(dev_extra) if dev_extra else "python -m pip install -e ."
+        install_args.append(f'-e ".[{dev_extra}]"' if dev_extra else "-e .")
     elif (root / "requirements.txt").is_file():
         dependency_source = "requirements"
-        install_command = "python -m pip install -r requirements.txt"
+        install_args.append("-r requirements.txt")
         if (root / "requirements-dev.txt").is_file():
-            install_command += " -r requirements-dev.txt"
+            install_args.append("-r requirements-dev.txt")
     else:
         dependency_source = "none"
-        install_command = ""
-        warnings.append("No pyproject.toml or requirements.txt found; nothing to install.")
+        if pyproject:
+            warnings.append(
+                "pyproject.toml has no [project] or [build-system] table, "
+                "so the project can't be pip-installed."
+            )
+        else:
+            warnings.append("No pyproject.toml or requirements.txt found.")
 
     test_runner = _detect_test_runner(root, tool_table, all_deps)
     if test_runner == "none":
         warnings.append("No tests found.")
     elif test_runner == "pytest" and "pytest" not in all_deps:
-        warnings.append("pytest is configured but not listed as a dependency; CI will install it.")
+        install_args.append("pytest")
+        warnings.append("pytest is used but not listed as a dependency; CI will install it.")
+
+    install_command = "python -m pip install " + " ".join(install_args) if install_args else ""
 
     requires_python = project_table.get("requires-python")
     if requires_python:

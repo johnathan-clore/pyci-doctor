@@ -60,6 +60,16 @@ def test_project_with_nothing_to_install_or_test():
     assert "No tests found." in profile.warnings
 
 
+def test_pyproject_with_only_tool_settings_is_not_installed():
+    # Regression test: modelled on llm-output-eval, whose pyproject.toml holds only pytest settings.
+    # Running `pip install -e .` there fails, so the detector must not suggest it.
+    profile = detect(FIXTURES / "config_only_pyproject")
+    assert profile.dependency_source == "none"
+    assert profile.install_command == "python -m pip install pytest"
+    assert profile.test_runner == "pytest"
+    assert any("can't be pip-installed" in w for w in profile.warnings)
+
+
 def test_invalid_pyproject_raises_clear_error():
     with pytest.raises(DetectionError, match="Invalid pyproject.toml"):
         detect(FIXTURES / "broken_pyproject")
@@ -87,11 +97,32 @@ def test_test_extra_is_used_when_there_is_no_dev_extra(tmp_path):
     assert detect(tmp_path).install_command == 'python -m pip install -e ".[test]"'
 
 
-def test_pytest_config_without_pytest_dependency_warns(tmp_path):
+def test_pytest_config_without_pytest_dependency_adds_pytest_to_install(tmp_path):
     write(tmp_path / "pyproject.toml", '[project]\nname = "x"\nversion = "1"\n[tool.pytest.ini_options]\n')
     profile = detect(tmp_path)
     assert profile.test_runner == "pytest"
+    assert profile.install_command == "python -m pip install -e . pytest"
     assert any("not listed as a dependency" in w for w in profile.warnings)
+
+
+def test_build_system_without_project_table_is_installable(tmp_path):
+    # Poetry projects describe the package under [tool.poetry] and [build-system], not [project].
+    write(
+        tmp_path / "pyproject.toml",
+        '[build-system]\nrequires = ["poetry-core"]\nbuild-backend = "poetry.core.masonry.api"\n',
+    )
+    profile = detect(tmp_path)
+    assert profile.dependency_source == "pyproject"
+    assert profile.install_command == "python -m pip install -e ."
+
+
+def test_config_only_pyproject_falls_back_to_requirements_txt(tmp_path):
+    write(tmp_path / "pyproject.toml", "[tool.ruff]\nline-length = 100\n")
+    write(tmp_path / "requirements.txt", "pytest\n")
+    profile = detect(tmp_path)
+    assert profile.dependency_source == "requirements"
+    assert profile.install_command == "python -m pip install -r requirements.txt"
+    assert profile.has_ruff is True
 
 
 def test_ruff_toml_file_enables_ruff(tmp_path):
