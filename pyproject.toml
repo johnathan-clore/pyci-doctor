@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyci-doctor"
+dynamic = ["version"]
+description = "Generate cross-platform GitHub Actions CI for Python projects and detect flaky tests."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+pyci-doctor = "pyci_doctor.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pyci_doctor.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
