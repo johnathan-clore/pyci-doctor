@@ -57,4 +57,5 @@ select = ["E", "F", "W", "B", "UP", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["fixtures", ".*", "build", "dist", "*.egg-info"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not network'"
+markers = ["network: needs internet access; run with: python -m pytest -m network"]

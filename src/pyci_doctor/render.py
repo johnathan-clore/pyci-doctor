@@ -16,6 +16,10 @@ CHECKOUT_ACTION = "actions/checkout@v7"
 SETUP_PYTHON_ACTION = "actions/setup-python@v7"
 UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@v7"
 
+# Pinned so a new ruff release can't turn CI red without any code change.
+# tests/test_freshness.py (run weekly) reports when a newer version is out.
+RUFF_VERSION = "0.17.5"
+
 # The flaky job installs the same pyci-doctor version that generated the workflow,
 # from a git tag, so a newer release can't change its behaviour unannounced.
 PYCI_DOCTOR_SOURCE = f"git+https://github.com/johnathan-clore/pyci-doctor@v{__version__}"
@@ -155,7 +159,7 @@ def render_workflow(profile: ProjectProfile, all_pythons: bool = False, flaky_ru
             f'          python-version: "{newest}"',
             "",
             "      - name: Install ruff",
-            "        run: python -m pip install ruff",
+            f"        run: python -m pip install ruff=={RUFF_VERSION}",
             "",
             "      - name: Lint",
             "        run: python -m ruff check .",
