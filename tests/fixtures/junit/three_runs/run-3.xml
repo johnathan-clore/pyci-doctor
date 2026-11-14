@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="1" tests="7" time="0.42" timestamp="2026-11-14T10:00:03" hostname="runner">
+<testcase classname="tests.test_api" name="test_health" time="0.010" />
+<testcase classname="tests.test_api" name="test_fetch_user" time="0.010" />
+<testcase classname="tests.test_math" name="test_rounding" time="0.020"><failure message="AssertionError: assert 0.30000000000000004 == 0.3">AssertionError: assert 0.30000000000000004 == 0.3
+  at tests/test_math.py:12</failure></testcase>
+<testcase classname="tests.test_math" name="test_broken" time="0.020"><failure message="AssertionError: assert 3 == 4">AssertionError: assert 3 == 4
+  at tests/test_math.py:12</failure></testcase>
+<testcase classname="tests.test_api" name="test_upload" time="0.020"><failure message="AssertionError: assert &apos;partial&apos; == &apos;ok&apos;">AssertionError: assert &apos;partial&apos; == &apos;ok&apos;
+  at tests/test_api.py:12</failure></testcase>
+<testcase classname="tests.test_math" name="test_windows_only" time="0.000"><skipped type="pytest.skip" message="Windows only">Windows only</skipped></testcase>
+<testcase classname="tests.test_api" name="test_new" time="0.010" />
+</testsuite></testsuites>
