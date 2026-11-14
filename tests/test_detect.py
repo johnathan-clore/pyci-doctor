@@ -25,7 +25,7 @@ def test_src_layout_pytest_project():
     assert profile.install_command == 'python -m pip install -e ".[dev]"'
     assert profile.test_runner == "pytest"
     assert profile.test_command == "python -m pytest -v"
-    assert profile.python_versions == ["3.11", "3.12", "3.13", "3.14"]
+    assert profile.python_versions == ["3.11", "3.12", "3.13", "3.14", "3.15"]
     assert profile.has_ruff is True
     assert profile.has_coverage is True
     assert profile.warnings == []
@@ -152,15 +152,15 @@ def test_test_files_named_with_test_suffix_are_found(tmp_path):
 @pytest.mark.parametrize(
     ("spec", "expected"),
     [
-        (">=3.11", ["3.11", "3.12", "3.13", "3.14"]),
+        (">=3.11", ["3.11", "3.12", "3.13", "3.14", "3.15"]),
         (">=3.10,<3.13", ["3.10", "3.11", "3.12"]),
-        (">3.12", ["3.13", "3.14"]),
+        (">3.12", ["3.13", "3.14", "3.15"]),
         ("<=3.10", ["3.9", "3.10"]),
         ("==3.12.*", ["3.12"]),
-        ("!=3.12.*, >=3.11", ["3.11", "3.13", "3.14"]),
-        ("~=3.13", ["3.13", "3.14"]),
-        (">=3.10.2", ["3.10", "3.11", "3.12", "3.13", "3.14"]),
-        (" >= 3.13 ", ["3.13", "3.14"]),
+        ("!=3.12.*, >=3.11", ["3.11", "3.13", "3.14", "3.15"]),
+        ("~=3.13", ["3.13", "3.14", "3.15"]),
+        (">=3.10.2", ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]),
+        (" >= 3.13 ", ["3.13", "3.14", "3.15"]),
         (">=4.0", []),
     ],
 )
@@ -187,7 +187,7 @@ def test_detect_command_prints_json(capsys):
     assert main(["detect", str(FIXTURES / "src_pytest"), "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["name"] == "demo"
-    assert data["python_versions"] == ["3.11", "3.12", "3.13", "3.14"]
+    assert data["python_versions"] == ["3.11", "3.12", "3.13", "3.14", "3.15"]
 
 
 def test_detect_command_prints_readable_text(capsys):
@@ -202,3 +202,14 @@ def test_detect_command_reports_errors_on_stderr_with_exit_code_1(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("error: Invalid pyproject.toml")
+
+
+def test_known_pythons_include_the_running_python():
+    # Staleness alarm: running the tests on a Python newer than KNOWN_PYTHONS fails here,
+    # a reminder to add it (a new Python is released every October).
+    import sys
+
+    from pyci_doctor.detect import KNOWN_PYTHONS
+
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert running in KNOWN_PYTHONS, f"Add {running} to KNOWN_PYTHONS in detect.py"

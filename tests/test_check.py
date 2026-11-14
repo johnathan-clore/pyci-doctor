@@ -87,7 +87,7 @@ def test_init_options_are_remembered_through_the_header(project):
     assert main(["init", str(project), "--force", "--all-pythons"]) == EXIT_OK
     text = workflow(project).read_text(encoding="utf-8")
     assert text.splitlines()[0].endswith("--all-pythons")
-    assert '"3.11", "3.12", "3.13", "3.14"' in text
+    assert '["3.11", "3.12", "3.13", "3.14", "3.15"]' in text
     assert check_workflow(project).status is Status.UP_TO_DATE
 
 

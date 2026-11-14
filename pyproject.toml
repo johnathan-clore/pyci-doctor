@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,6 +9,29 @@ description = "Generate cross-platform GitHub Actions CI for Python projects and
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Johnathan Clore" }]
+keywords = ["ci", "github-actions", "testing", "flaky-tests", "pytest"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/johnathan-clore/pyci-doctor"
+Issues = "https://github.com/johnathan-clore/pyci-doctor/issues"
+Releases = "https://github.com/johnathan-clore/pyci-doctor/releases"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyyaml>=6"]
@@ -19,6 +42,17 @@ pyci-doctor = "pyci_doctor.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "pyci_doctor.__version__" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# The fake projects are test data, not our code; one is a deliberately broken pyproject.toml
+# that ruff would otherwise try to read as configuration and fail on.
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+# Pyflakes, pycodestyle, bugbear (likely bugs), pyupgrade (modern syntax), simplify.
+select = ["E", "F", "W", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

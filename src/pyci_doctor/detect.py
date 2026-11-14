@@ -11,10 +11,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 # Python versions the generated CI can test, oldest to newest.
-KNOWN_PYTHONS = ("3.9", "3.10", "3.11", "3.12", "3.13", "3.14")
+# A new Python is released every October: add it here, then release a new pyci-doctor.
+# (test_known_pythons_include_the_running_python fails if you run the tests on a newer Python.)
+KNOWN_PYTHONS = ("3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
 
-# Used when a project doesn't say which Python versions it supports.
-DEFAULT_PYTHONS = ("3.12", "3.13", "3.14")
+# Used when a project doesn't say which Python versions it supports: the three newest.
+DEFAULT_PYTHONS = ("3.13", "3.14", "3.15")
 
 
 class DetectionError(Exception):
