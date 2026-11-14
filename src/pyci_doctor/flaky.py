@@ -5,12 +5,15 @@ Input is JUnit XML, the format pytest writes with --junitxml and most CI tools u
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from pyci_doctor.pytest_shuffle import SEED_VARIABLE
 
 
 class FlakyError(Exception):
@@ -167,12 +170,28 @@ def classify(runs: Sequence[Sequence[Outcome]]) -> list[History]:
 
 # --- Running the suite several times ---
 
-Runner = Callable[[list[str]], int]
+# runner(command, env) -> exit code. Injectable so tests can fake the subprocess.
+Runner = Callable[[list[str], dict[str, str]], int]
+
+SEED_RE = re.compile(r"-seed-(\d+)\.xml$")
 
 
-def _default_runner(command: list[str]) -> int:
+def _default_runner(command: list[str], env: dict[str, str]) -> int:
     # Capture pytest's own output so it can't mix into ours (e.g. break --json on stdout).
-    return subprocess.run(command, capture_output=True, text=True).returncode
+    return subprocess.run(command, capture_output=True, text=True, env=env).returncode
+
+
+def _install_shuffle_plugin(out: Path) -> Path:
+    """Copy the shuffle plugin into its own folder, as a standalone module.
+
+    Only that folder goes on PYTHONPATH. Putting pyci-doctor's whole site-packages there
+    instead could shadow the project's own packages inside a uv or Poetry virtualenv.
+    """
+    plugin_dir = out / "_plugin"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(__file__).with_name("pytest_shuffle.py")
+    (plugin_dir / "pyci_doctor_shuffle.py").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return plugin_dir
 
 
 def run_repeatedly(
@@ -181,21 +200,38 @@ def run_repeatedly(
     out_dir: str | Path,
     runner: Runner = _default_runner,
     progress: Callable[[str], None] = lambda message: None,
+    seed: int | None = None,
+    environ: dict[str, str] | None = None,
 ) -> list[Path]:
     """Run pytest `runs` times, writing one JUnit XML file per run.
 
-    `runner` is injectable so tests can fake the subprocess. A failing run is expected
-    (that's what we're looking for), so the exit code is only used to spot runs that
-    produced no results at all.
+    With a seed, run i uses seed + i to shuffle the test order, and the seed is part of the
+    result file's name (run-002-seed-1235.xml), so any failing order can be replayed.
+    A failing run is expected (that's what we're looking for); only a run that writes no
+    results file at all is an error, because then the test command itself is broken.
     """
     if runs < 2:
         raise FlakyError("Need at least 2 runs to compare.")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("run-*.xml"):
+        old.unlink()  # results of an earlier invocation would otherwise be mixed in
+
+    env = dict(os.environ if environ is None else environ)
+    command = list(base_command)
+    if seed is not None:
+        plugin_dir = _install_shuffle_plugin(out)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(plugin_dir), env.get("PYTHONPATH", "")]))
+        command += ["-p", "pyci_doctor_shuffle"]
+
     files = []
     for i in range(1, runs + 1):
-        result_file = out / f"run-{i:03d}.xml"
-        exit_code = runner([*base_command, f"--junitxml={result_file}"])
+        if seed is None:
+            result_file = out / f"run-{i:03d}.xml"
+        else:
+            env[SEED_VARIABLE] = str(seed + i)
+            result_file = out / f"run-{i:03d}-seed-{seed + i}.xml"
+        exit_code = runner([*command, f"--junitxml={result_file}"], env)
         progress(f"run {i}/{runs}: pytest exit code {exit_code}")
         if not result_file.is_file():
             raise FlakyError(f"Run {i} produced no results file; the test command itself is failing.")
@@ -203,10 +239,25 @@ def run_repeatedly(
     return files
 
 
+def seeds_from_files(files: Sequence[Path]) -> list[int | None]:
+    """The shuffle seed of each run, read from its file name (None if it wasn't shuffled)."""
+    return [int(m.group(1)) if (m := SEED_RE.search(Path(f).name)) else None for f in files]
+
+
+def failing_seeds(history: History, seeds: Sequence[int | None]) -> list[int]:
+    return [
+        seed
+        for result, seed in zip(history.results, seeds, strict=True)
+        if result in ("failed", "error") and seed is not None
+    ]
+
+
 # --- Reporting ---
 
 
-def format_report(histories: Sequence[History], run_count: int) -> str:
+def format_report(
+    histories: Sequence[History], run_count: int, seeds: Sequence[int | None] | None = None
+) -> str:
     flaky = [h for h in histories if h.category == "flaky"]
     failing = [h for h in histories if h.category == "stable-fail"]
     lines = [
@@ -226,6 +277,15 @@ def format_report(histories: Sequence[History], run_count: int) -> str:
             )
             if h.first_failure:
                 lines.append(f"      first failure: {h.first_failure[:200]}")
+            failed_with = failing_seeds(h, seeds) if seeds else []
+            if failed_with:
+                lines.append(f"      failed with shuffle seed(s): {', '.join(map(str, failed_with))}")
+    if seeds and any(failing_seeds(h, seeds) for h in flaky):
+        lines += [
+            "",
+            "To replay a failing order (pyci-doctor installed in the same environment):",
+            f"  {SEED_VARIABLE}=<seed> python -m pytest -p pyci_doctor.pytest_shuffle",
+        ]
     missing = [h for h in histories if "missing" in h.results]
     if missing:
         lines += ["", "Missing from some runs (a run may have crashed):"]
@@ -233,9 +293,11 @@ def format_report(histories: Sequence[History], run_count: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def to_dict(histories: Sequence[History], run_count: int) -> dict:
+def to_dict(histories: Sequence[History], run_count: int, seeds: Sequence[int | None] | None = None) -> dict:
+    seeds = list(seeds) if seeds else [None] * run_count
     return {
         "runs": run_count,
+        "seeds": seeds,
         "tests": [
             {
                 "test_id": h.test_id,
@@ -245,7 +307,53 @@ def to_dict(histories: Sequence[History], run_count: int) -> dict:
                 "results": h.results,
                 "suspected_cause": h.suspected_cause,
                 "first_failure": h.first_failure,
+                "failing_seeds": failing_seeds(h, seeds),
             }
             for h in histories
         ],
     }
+
+
+# --- GitHub Actions output ---
+
+
+def _escape(text: str, for_property: bool = False) -> str:
+    """Escape text for a GitHub workflow command, so newlines or ':' can't break it."""
+    text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    if for_property:
+        text = text.replace(":", "%3A").replace(",", "%2C")
+    return text
+
+
+def github_annotations(histories: Sequence[History], run_count: int) -> list[str]:
+    """Workflow commands that make GitHub show flaky and failing tests on the run and the PR."""
+    lines = []
+    for h in histories:
+        if h.category == "flaky":
+            level, title = "warning", f"Flaky test: {h.test_id}"
+        elif h.category == "stable-fail":
+            level, title = "error", f"Always failing: {h.test_id}"
+        else:
+            continue
+        message = f"passed {h.passed}/{run_count}, failed {h.failed}/{run_count}, cause: {h.suspected_cause}"
+        if h.first_failure:
+            message += f"\nfirst failure: {h.first_failure[:500]}"
+        lines.append(f"::{level} title={_escape(title, for_property=True)}::{_escape(message)}")
+    return lines
+
+
+def markdown_summary(histories: Sequence[History], run_count: int, seeds: Sequence[int | None] | None = None) -> str:
+    """A table for the run's summary page (written to $GITHUB_STEP_SUMMARY)."""
+    problems = [h for h in histories if h.category in ("flaky", "stable-fail")]
+    lines = [f"### Flaky test check: {run_count} runs", ""]
+    if not problems:
+        lines.append(f"No flaky or failing tests in {len(histories)} tests.")
+        return "\n".join(lines) + "\n"
+    lines += ["| Test | Result | Passed | Cause | Failing seeds |", "|---|---|---|---|---|"]
+    for h in problems:
+        seed_text = ", ".join(map(str, failing_seeds(h, seeds))) if seeds else ""
+        test_id = h.test_id.replace("|", "\\|")
+        lines.append(
+            f"| `{test_id}` | {h.category} | {h.passed}/{run_count} | {h.suspected_cause} | {seed_text} |"
+        )
+    return "\n".join(lines) + "\n"

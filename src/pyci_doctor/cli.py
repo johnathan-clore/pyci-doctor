@@ -6,6 +6,8 @@ import argparse
 import difflib
 import json
 import os
+import random
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,8 +21,11 @@ from pyci_doctor.flaky import (
     classify,
     collect_result_files,
     format_report,
+    github_annotations,
+    markdown_summary,
     parse_junit,
     run_repeatedly,
+    seeds_from_files,
     to_dict,
 )
 from pyci_doctor.render import HEADER_PREFIX, RenderError, extract_custom_blocks, render_workflow
@@ -96,6 +101,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="flaky-results",
         help="Where --runs writes its result files (default: flaky-results).",
     )
+    flaky_cmd.add_argument(
+        "--command",
+        # Not dest="command": that name already holds which subcommand was chosen.
+        dest="pytest_command",
+        metavar="CMD",
+        help='How to start pytest with --runs (default: "python -m pytest"), e.g. "uv run pytest".',
+    )
+    flaky_cmd.add_argument(
+        "--seed",
+        type=int,
+        help="First shuffle seed for --runs; run i uses seed+i (default: random). Use it to replay a session.",
+    )
+    flaky_cmd.add_argument(
+        "--no-shuffle", action="store_true", help="With --runs, keep the normal test order in every run."
+    )
+    flaky_cmd.add_argument(
+        "--github",
+        action="store_true",
+        help="Print GitHub annotations and a run summary (automatic inside GitHub Actions).",
+    )
     flaky_cmd.add_argument("--json", action="store_true", help="Print the result as JSON.")
 
     suggest_cmd = subcommands.add_parser(
@@ -127,7 +152,15 @@ def main(argv: Sequence[str] | None = None, client: ai.Client | None = None) -> 
     if args.command == "suggest":
         return _run_suggest(args.path, write=args.write, model=args.model, as_json=args.json, client=client)
     if args.command == "flaky":
-        return _run_flaky(args.results, runs=args.runs, out=args.out, as_json=args.json)
+        return _run_flaky(
+            args.results,
+            runs=args.runs,
+            out=args.out,
+            as_json=args.json,
+            command=args.pytest_command,
+            seed=None if args.no_shuffle else (args.seed if args.seed is not None else random.randrange(1, 100_000)),
+            github=args.github or os.environ.get("GITHUB_ACTIONS") == "true",
+        )
     if args.command == "init":
         return _run_init(
             args.path,
@@ -218,14 +251,40 @@ def _run_check(path: str, strict: bool) -> int:
     return EXIT_OK if result.ok else EXIT_PROBLEM_FOUND
 
 
-def _run_flaky(results: list[str], runs: int | None, out: str, as_json: bool) -> int:
+def split_command(text: str, windows: bool = os.name == "nt") -> list[str]:
+    """Split a command line into arguments, keeping Windows paths intact.
+
+    shlex's normal (POSIX) mode treats backslashes as escapes, which turns
+    C:\\Python314\\python.exe into C:Python314python.exe. On Windows, split in shlex's
+    non-POSIX mode instead and remove the quotes it leaves around quoted arguments.
+    """
+    if not windows:
+        return shlex.split(text)
+    parts = shlex.split(text, posix=False)
+    return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+
+
+def _run_flaky(
+    results: list[str],
+    runs: int | None,
+    out: str,
+    as_json: bool,
+    command: str | None = None,
+    seed: int | None = None,
+    github: bool = False,
+) -> int:
+    def progress(message: str) -> None:
+        print(message, file=sys.stderr)
+
     try:
         if runs is not None:
             if results:
                 raise FlakyError("Give either result files or --runs, not both.")
-            pytest_command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+            base = split_command(command) if command else [sys.executable, "-m", "pytest"]
+            if seed is not None:
+                progress(f"shuffling test order; run i uses seed {seed}+i")
             files = run_repeatedly(
-                pytest_command, runs, out, progress=lambda message: print(message, file=sys.stderr)
+                [*base, "-q", "-p", "no:cacheprovider"], runs, out, progress=progress, seed=seed
             )
         else:
             files = collect_result_files(results)
@@ -235,14 +294,22 @@ def _run_flaky(results: list[str], runs: int | None, out: str, as_json: bool) ->
         return EXIT_CANNOT_CHECK
 
     histories = classify(all_runs)
+    seeds = seeds_from_files(files)
     if as_json:
-        print(json.dumps(to_dict(histories, len(all_runs)), indent=2))
+        print(json.dumps(to_dict(histories, len(all_runs), seeds), indent=2))
     else:
-        sys.stdout.write(format_report(histories, len(all_runs)))
+        sys.stdout.write(format_report(histories, len(all_runs), seeds))
+        if github:
+            for line in github_annotations(histories, len(all_runs)):
+                print(line)
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if github and summary_path:
+        with open(summary_path, "a", encoding="utf-8") as summary:
+            summary.write(markdown_summary(histories, len(all_runs), seeds))
 
     problems = any(h.category in ("flaky", "stable-fail") for h in histories)
     return EXIT_PROBLEM_FOUND if problems else EXIT_OK
-
 
 def _run_suggest(path: str, write: bool, model: str, as_json: bool, client: ai.Client | None) -> int:
 
