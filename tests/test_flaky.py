@@ -482,3 +482,15 @@ def test_custom_command_runs_real_pytest(tmp_path, monkeypatch, capsys):
     command = f'"{sys.executable}" -m pytest'
     assert main(["flaky", "--runs", "2", "--command", command, "--json"]) == EXIT_OK
     assert json.loads(capsys.readouterr().out)["tests"][0]["category"] == "stable-pass"
+
+
+def test_report_shows_only_the_first_line_of_a_long_failure_message():
+    from pyci_doctor.flaky import format_report
+
+    runs = [
+        [Outcome("t::a", "failed", "assert [1] == []\n\nLeft contains one more item: 1")],
+        [Outcome("t::a", "passed")],
+    ]
+    report = format_report(classify(runs), 2)
+    assert "first failure: assert [1] == []\n" in report
+    assert "Left contains" not in report

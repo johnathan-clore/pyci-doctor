@@ -14,7 +14,14 @@ FIXTURES = TESTS / "fixtures"
 GOLDEN = TESTS / "golden"
 REPO_ROOT = TESTS.parent
 
-RENDERABLE_FIXTURES = ["src_pytest", "flat_requirements", "unittest_only", "config_only_pyproject"]
+RENDERABLE_FIXTURES = [
+    "src_pytest",
+    "flat_requirements",
+    "unittest_only",
+    "config_only_pyproject",
+    "uv_project",
+    "poetry_project",
+]
 
 
 def read_exact(path: Path) -> str:
@@ -330,3 +337,32 @@ def test_coverage_needs_pytest():
 
 def test_no_coverage_by_default():
     assert "--cov" not in render_workflow(make_profile())
+
+
+
+# --- uv and Poetry: every command runs inside the project's environment ---
+
+
+@pytest.mark.parametrize(
+    ("fixture", "cov_install", "cov_report"),
+    [
+        ("uv_project", "&& uv pip install pytest-cov", "uv run coverage report"),
+        ("poetry_project", "&& poetry run python -m pip install pytest-cov", "poetry run coverage report"),
+    ],
+)
+def test_coverage_and_flaky_use_the_project_environment(fixture, cov_install, cov_report):
+    profile = detect(FIXTURES / fixture)
+    manager = profile.package_manager
+    workflow = render_workflow(profile, coverage=True, flaky_runs=3)
+    data = parse(workflow)
+    test_runs = [step.get("run", "") for step in data["jobs"]["test"]["steps"]]
+    assert any(r.endswith(cov_install) for r in test_runs)
+    assert f"{manager} run pytest -v --cov --cov-report=term" in test_runs
+    assert any(r.startswith(cov_report) for r in test_runs)
+    flaky_runs = [step.get("run", "") for step in data["jobs"]["flaky"]["steps"]]
+    assert f'python -m pyci_doctor flaky --runs 3 --command "{manager} run pytest"' in flaky_runs
+    assert f"cache-dependency-path: {manager}.lock" in workflow
+
+
+def test_pip_flaky_job_has_no_command_option():
+    assert "--command" not in render_workflow(make_profile(), flaky_runs=3)

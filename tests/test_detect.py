@@ -213,3 +213,70 @@ def test_known_pythons_include_the_running_python():
 
     running = f"{sys.version_info.major}.{sys.version_info.minor}"
     assert running in KNOWN_PYTHONS, f"Add {running} to KNOWN_PYTHONS in detect.py"
+
+
+
+# --- uv and Poetry projects ---
+
+
+def test_uv_project():
+    profile = detect(FIXTURES / "uv_project")
+    assert profile.package_manager == "uv"
+    assert profile.dependency_source == "uv.lock"
+    assert profile.install_command == "python -m pip install uv && uv sync --all-extras"
+    assert profile.test_command == "uv run pytest -v"
+    assert profile.python_versions == ["3.12", "3.13", "3.14", "3.15"]
+    assert profile.has_ruff is True  # found in the "lint" dependency group
+    assert profile.warnings == []
+
+
+def test_poetry_project():
+    profile = detect(FIXTURES / "poetry_project")
+    assert profile.name == "poetry_project"  # Poetry keeps the name in [tool.poetry], not [project]
+    assert profile.package_manager == "poetry"
+    assert profile.dependency_source == "poetry.lock"
+    assert profile.install_command == "python -m pip install poetry && poetry install --all-extras"
+    assert profile.test_command == "poetry run pytest -v"
+    assert profile.python_versions == ["3.12", "3.13", "3.14", "3.15"]  # from python = "^3.12"
+    assert profile.has_coverage is True  # pytest-cov in the dev group
+    assert profile.warnings == []
+
+
+def test_poetry_without_lock_file_is_still_poetry(tmp_path):
+    write(
+        tmp_path / "pyproject.toml",
+        '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\npython = "~3.13"\n'
+        '[tool.poetry.group.dev.dependencies]\npytest = "*"\n',
+    )
+    profile = detect(tmp_path)
+    assert profile.package_manager == "poetry"
+    assert profile.dependency_source == "pyproject"
+    assert profile.python_versions == ["3.13"]  # ~3.13 means >=3.13,<3.14
+
+
+def test_pip_projects_are_unchanged():
+    assert detect(FIXTURES / "src_pytest").package_manager == "pip"
+
+
+def test_uv_project_without_pytest_dependency_warns_instead_of_pip_installing(tmp_path):
+    write(tmp_path / "pyproject.toml", '[project]\nname = "x"\nversion = "1"\n[tool.pytest.ini_options]\n')
+    write(tmp_path / "uv.lock", "version = 1\n")
+    profile = detect(tmp_path)
+    assert "pytest" not in profile.install_command.split("&&")[-1]
+    assert any("add it to your uv dev group" in w for w in profile.warnings)
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("^3.11", ">=3.11,<4.0"),
+        ("~3.12", ">=3.12,<3.13"),
+        ("~=3.12", "~=3.12"),
+        (">=3.11,<3.14", ">=3.11,<3.14"),
+        ("^3.11.4", ">=3.11,<4.0"),
+    ],
+)
+def test_poetry_python_constraints_are_translated(spec, expected):
+    from pyci_doctor.detect import _poetry_python_spec
+
+    assert _poetry_python_spec({"poetry": {"dependencies": {"python": spec}}}) == expected

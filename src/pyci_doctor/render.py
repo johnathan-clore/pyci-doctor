@@ -129,9 +129,20 @@ def matrix_pythons(profile: ProjectProfile, all_pythons: bool = False) -> list[s
     return [versions[0], versions[-1]]
 
 
-def _with_package(install_command: str, package: str) -> str:
-    """Add one more package to a pip install command (or start one)."""
+def _with_package(profile: ProjectProfile, install_command: str, package: str) -> str:
+    """Add one more package to the install command, in the project's own environment."""
+    if profile.package_manager == "uv":
+        return f"{install_command} && uv pip install {package}"
+    if profile.package_manager == "poetry":
+        return f"{install_command} && poetry run python -m pip install {package}"
     return f"{install_command} {package}" if install_command else f"python -m pip install {package}"
+
+
+def _run_in_env(profile: ProjectProfile, module: str) -> str:
+    """How to run a tool installed in the project's environment."""
+    if profile.package_manager in ("uv", "poetry"):
+        return f"{profile.package_manager} run {module}"
+    return f"python -m {module}"
 
 
 def _cache_lines(profile: ProjectProfile) -> list[str]:
@@ -141,6 +152,8 @@ def _cache_lines(profile: ProjectProfile) -> list[str]:
         path = "pyproject.toml"
     elif profile.dependency_source == "requirements":
         path = "requirements*.txt"
+    elif profile.dependency_source in ("uv.lock", "poetry.lock"):
+        path = profile.dependency_source
     else:
         return []
     return [
@@ -212,7 +225,7 @@ def render_workflow(
         ]
         install_command, test_command = profile.install_command, profile.test_command
         if coverage:
-            install_command = _with_package(install_command, "pytest-cov")
+            install_command = _with_package(profile, install_command, "pytest-cov")
             test_command += " --cov --cov-report=term"
         if install_command:
             lines += [
@@ -229,7 +242,7 @@ def render_workflow(
                 "",
                 "      - name: Show coverage on the run page",
                 "        shell: bash  # also on Windows, so >> and $GITHUB_STEP_SUMMARY work the same everywhere",
-                '        run: python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"',
+                f'        run: {_run_in_env(profile, "coverage")} report --format=markdown >> "$GITHUB_STEP_SUMMARY"',
             ]
         lines += _custom_section("test", custom)
 
@@ -281,6 +294,13 @@ def render_workflow(
     return "\n".join(lines) + "\n"
 
 
+def _flaky_command_option(profile: ProjectProfile) -> str:
+    # pyci-doctor runs from the runner's Python; pytest must run inside the project's environment.
+    if profile.package_manager in ("uv", "poetry"):
+        return f' --command "{profile.package_manager} run pytest"'
+    return ""
+
+
 def _flaky_job(profile: ProjectProfile, runs: int) -> list[str]:
     newest = profile.python_versions[-1]
     lines = [
@@ -310,7 +330,7 @@ def _flaky_job(profile: ProjectProfile, runs: int) -> list[str]:
         f'        run: python -c "import pyci_doctor" || python -m pip install "{PYCI_DOCTOR_SOURCE}"',
         "",
         f"      - name: Run tests {runs} times and report flaky tests",
-        f"        run: python -m pyci_doctor flaky --runs {runs}",
+        f"        run: python -m pyci_doctor flaky --runs {runs}{_flaky_command_option(profile)}",
         "",
         "      - name: Keep the results for inspection",
         "        if: always()",

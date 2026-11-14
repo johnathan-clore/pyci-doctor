@@ -34,6 +34,7 @@ class ProjectProfile:
     python_versions: list[str]
     has_ruff: bool
     has_coverage: bool
+    package_manager: str = "pip"  # "pip", "uv" or "poetry"
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -53,7 +54,8 @@ def detect(project_dir: str | Path) -> ProjectProfile:
     name = project_table.get("name") or root.resolve().name
 
     dev_extra = _find_dev_extra(project_table)
-    all_deps = _all_dependency_names(root, project_table)
+    all_deps = _all_dependency_names(root, pyproject)
+    package_manager = _detect_package_manager(root, tool_table)
 
     # pip can only install a project whose pyproject.toml describes a package:
     # a [project] table (standard) or a [build-system] table (e.g. Poetry, Hatch).
@@ -61,7 +63,11 @@ def detect(project_dir: str | Path) -> ProjectProfile:
     installable = "project" in pyproject or "build-system" in pyproject
 
     install_args: list[str] = []
-    if installable:
+    if package_manager != "pip":
+        # uv and Poetry install the project and its dev dependencies into their own virtualenv.
+        lock_file = f"{package_manager}.lock"
+        dependency_source = lock_file if (root / lock_file).is_file() else "pyproject"
+    elif installable:
         dependency_source = "pyproject"
         install_args.append(f'-e ".[{dev_extra}]"' if dev_extra else "-e .")
     elif (root / "requirements.txt").is_file():
@@ -83,12 +89,22 @@ def detect(project_dir: str | Path) -> ProjectProfile:
     if test_runner == "none":
         warnings.append("No tests found.")
     elif test_runner == "pytest" and "pytest" not in all_deps:
-        install_args.append("pytest")
-        warnings.append("pytest is used but not listed as a dependency; CI will install it.")
+        if package_manager == "pip":
+            install_args.append("pytest")
+            warnings.append("pytest is used but not listed as a dependency; CI will install it.")
+        else:
+            warnings.append(
+                f"pytest is used but not listed as a dependency; add it to your {package_manager} dev group."
+            )
 
-    install_command = "python -m pip install " + " ".join(install_args) if install_args else ""
+    if package_manager == "uv":
+        install_command = "python -m pip install uv && uv sync --all-extras"
+    elif package_manager == "poetry":
+        install_command = "python -m pip install poetry && poetry install --all-extras"
+    else:
+        install_command = "python -m pip install " + " ".join(install_args) if install_args else ""
 
-    requires_python = project_table.get("requires-python")
+    requires_python = project_table.get("requires-python") or _poetry_python_spec(tool_table)
     if requires_python:
         python_versions = supported_pythons(requires_python)
         if not python_versions:
@@ -111,10 +127,11 @@ def detect(project_dir: str | Path) -> ProjectProfile:
         dependency_source=dependency_source,
         install_command=install_command,
         test_runner=test_runner,
-        test_command=_test_command(root, test_runner),
+        test_command=_test_command(root, test_runner, package_manager),
         python_versions=python_versions,
         has_ruff=has_ruff,
         has_coverage=has_coverage,
+        package_manager=package_manager,
         warnings=warnings,
     )
 
@@ -150,15 +167,51 @@ def _requirement_name(line: str) -> str | None:
     return match.group(1).lower().replace("_", "-") if match else None
 
 
-def _all_dependency_names(root: Path, project_table: dict) -> set[str]:
+def _all_dependency_names(root: Path, pyproject: dict) -> set[str]:
+    project_table = pyproject.get("project", {})
     lines: list[str] = list(project_table.get("dependencies", []))
     for group in project_table.get("optional-dependencies", {}).values():
         lines.extend(group)
+    # PEP 735 dependency groups (used by uv): entries are strings or {include-group = ...} tables.
+    for group in pyproject.get("dependency-groups", {}).values():
+        lines.extend(entry for entry in group if isinstance(entry, str))
+    # Poetry keeps dependencies as table keys: [tool.poetry.dependencies], [tool.poetry.group.dev.dependencies].
+    poetry = pyproject.get("tool", {}).get("poetry", {})
+    poetry_tables = [poetry.get("dependencies", {}), poetry.get("dev-dependencies", {})]
+    poetry_tables += [g.get("dependencies", {}) for g in poetry.get("group", {}).values()]
+    lines.extend(name for table in poetry_tables for name in table if name != "python")
     for filename in ("requirements.txt", "requirements-dev.txt"):
         path = root / filename
         if path.is_file():
             lines.extend(path.read_text(encoding="utf-8").splitlines())
     return {name for name in map(_requirement_name, lines) if name}
+
+
+def _detect_package_manager(root: Path, tool_table: dict) -> str:
+    if (root / "uv.lock").is_file():
+        return "uv"
+    if (root / "poetry.lock").is_file() or "dependencies" in tool_table.get("poetry", {}):
+        return "poetry"
+    return "pip"
+
+
+def _poetry_python_spec(tool_table: dict) -> str | None:
+    """Poetry's python constraint, translated to standard form: ^3.11 -> >=3.11,<4.0 and ~3.11 -> >=3.11,<3.12."""
+    spec = tool_table.get("poetry", {}).get("dependencies", {}).get("python")
+    if not isinstance(spec, str):
+        return None
+
+    def caret(m: re.Match) -> str:
+        major, minor = int(m.group(1)), int(m.group(2) or 0)
+        return f">={major}.{minor},<{major + 1}.0"
+
+    def tilde(m: re.Match) -> str:
+        major, minor = int(m.group(1)), int(m.group(2) or 0)
+        return f">={major}.{minor},<{major}.{minor + 1}"
+
+    spec = re.sub(r"\^\s*(\d+)(?:\.(\d+))?(?:\.\d+)?", caret, spec)
+    spec = re.sub(r"~(?!=)\s*(\d+)(?:\.(\d+))?(?:\.\d+)?", tilde, spec)
+    return spec
 
 
 def _has_test_files(root: Path) -> bool:
@@ -181,15 +234,17 @@ def _detect_test_runner(root: Path, tool_table: dict, deps: set[str]) -> str:
     return "none"
 
 
-def _test_command(root: Path, test_runner: str) -> str:
+def _test_command(root: Path, test_runner: str, package_manager: str = "pip") -> str:
+    # uv and Poetry run commands inside the project's own virtualenv.
+    prefix = {"uv": "uv run ", "poetry": "poetry run "}.get(package_manager, "")
     if test_runner == "pytest":
-        return "python -m pytest -v"
+        return f"{prefix}pytest -v" if prefix else "python -m pytest -v"
     if test_runner == "unittest":
         # Bare `unittest discover` finds nothing in a tests/ folder without an __init__.py on
         # newer Pythons (3.13 runs 0 tests; 3.11 finds them). Pointing it at tests/ works on all.
         if (root / "tests").is_dir():
-            return "python -m unittest discover -s tests -v"
-        return "python -m unittest discover -v"
+            return f"{prefix}python -m unittest discover -s tests -v"
+        return f"{prefix}python -m unittest discover -v"
     return ""
 
 

@@ -276,7 +276,9 @@ def format_report(
                 f"failed {h.failed}/{run_count}, cause: {h.suspected_cause}"
             )
             if h.first_failure:
-                lines.append(f"      first failure: {h.first_failure[:200]}")
+                # First line only: assertion messages can run over many lines.
+                first_line = h.first_failure.splitlines()[0] if h.first_failure.strip() else ""
+                lines.append(f"      first failure: {first_line[:200]}")
             failed_with = failing_seeds(h, seeds) if seeds else []
             if failed_with:
                 lines.append(f"      failed with shuffle seed(s): {', '.join(map(str, failed_with))}")
