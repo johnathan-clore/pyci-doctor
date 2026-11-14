@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Add a job that runs the tests N times and reports flaky tests (pytest only).",
     )
+    init_cmd.add_argument(
+        "--coverage",
+        action="store_true",
+        help="Measure test coverage with pytest-cov and show it on the run page (pytest only).",
+    )
     init_cmd.add_argument("--force", action="store_true", help="Overwrite an existing ci.yml.")
     init_cmd.add_argument(
         "--stdout", action="store_true", help="Print the workflow instead of writing the file."
@@ -166,6 +171,7 @@ def main(argv: Sequence[str] | None = None, client: ai.Client | None = None) -> 
             args.path,
             all_pythons=args.all_pythons,
             flaky_runs=args.flaky_runs,
+            coverage=args.coverage,
             force=args.force,
             to_stdout=args.stdout,
         )
@@ -196,13 +202,17 @@ def _run_detect(path: str, as_json: bool) -> int:
     return 0
 
 
-def _run_init(path: str, all_pythons: bool, flaky_runs: int, force: bool, to_stdout: bool) -> int:
+def _run_init(
+    path: str, all_pythons: bool, flaky_runs: int, force: bool, to_stdout: bool, coverage: bool = False
+) -> int:
     target = Path(path) / WORKFLOW_PATH
     try:
         profile = detect(path)
         # Keep the custom sections of an existing workflow (only relevant with --force or --stdout).
         custom = extract_custom_blocks(read_exact(target).replace("\r\n", "\n")) if target.is_file() else {}
-        workflow = render_workflow(profile, all_pythons=all_pythons, flaky_runs=flaky_runs, custom=custom)
+        workflow = render_workflow(
+            profile, all_pythons=all_pythons, flaky_runs=flaky_runs, custom=custom, coverage=coverage
+        )
     except (DetectionError, RenderError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

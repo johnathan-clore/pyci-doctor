@@ -133,3 +133,8 @@ def test_this_repo_passes_its_own_check():
 def test_flaky_runs_option_is_remembered_through_the_header(project):
     assert main(["init", str(project), "--force", "--flaky-runs", "4"]) == EXIT_OK
     assert check_workflow(project).status is Status.UP_TO_DATE
+
+
+def test_coverage_option_is_remembered_through_the_header(project):
+    assert main(["init", str(project), "--force", "--coverage", "--flaky-runs", "3"]) == EXIT_OK
+    assert check_workflow(project).status is Status.UP_TO_DATE

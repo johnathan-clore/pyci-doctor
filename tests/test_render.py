@@ -281,11 +281,52 @@ def test_flaky_job_needs_at_least_two_runs():
 
 
 @pytest.mark.parametrize(
-    ("all_pythons", "flaky_runs"),
-    [(False, 0), (True, 0), (False, 5), (True, 12)],
+    ("all_pythons", "flaky_runs", "coverage"),
+    [(False, 0, False), (True, 0, False), (False, 5, False), (True, 12, True), (False, 0, True)],
 )
-def test_header_options_round_trip(all_pythons, flaky_runs):
+def test_header_options_round_trip(all_pythons, flaky_runs, coverage):
     from pyci_doctor.render import header_line, options_from_header
 
-    line = header_line(all_pythons, flaky_runs)
-    assert options_from_header(line) == {"all_pythons": all_pythons, "flaky_runs": flaky_runs}
+    line = header_line(all_pythons, flaky_runs, coverage)
+    assert options_from_header(line) == {"all_pythons": all_pythons, "flaky_runs": flaky_runs, "coverage": coverage}
+
+
+
+# --- Coverage (init --coverage) ---
+
+
+def test_coverage_output_matches_golden_file(request):
+    workflow = render_workflow(detect(FIXTURES / "src_pytest"), coverage=True)
+    golden = GOLDEN / "src_pytest_coverage.yml"
+    if request.config.getoption("--update-golden"):
+        golden.write_text(workflow, encoding="utf-8", newline="\n")
+        pytest.skip(f"updated {golden.name}")
+    assert read_exact(golden) == workflow
+
+
+def test_coverage_installs_pytest_cov_and_measures_the_tests():
+    data = parse(render_workflow(make_profile(), coverage=True))
+    runs = [step.get("run", "") for step in data["jobs"]["test"]["steps"]]
+    assert 'python -m pip install -e ".[dev]" pytest-cov' in runs
+    assert "python -m pytest -v --cov --cov-report=term" in runs
+
+
+def test_coverage_summary_uses_bash_on_every_os():
+    data = parse(render_workflow(make_profile(), coverage=True))
+    summary = data["jobs"]["test"]["steps"][-1]
+    assert summary["shell"] == "bash"
+    assert '>> "$GITHUB_STEP_SUMMARY"' in summary["run"]
+
+
+def test_coverage_without_project_dependencies_still_installs_pytest_cov():
+    profile = make_profile(dependency_source="none", install_command="")
+    assert "python -m pip install pytest-cov" in render_workflow(profile, coverage=True)
+
+
+def test_coverage_needs_pytest():
+    with pytest.raises(RenderError, match="needs a pytest project"):
+        render_workflow(make_profile(test_runner="unittest", test_command="python -m unittest"), coverage=True)
+
+
+def test_no_coverage_by_default():
+    assert "--cov" not in render_workflow(make_profile())
