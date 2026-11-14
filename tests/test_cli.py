@@ -40,19 +40,35 @@ def test_runs_as_module_in_a_real_subprocess():
 # --- The release workflow (.github/workflows/release.yml) ---
 
 
-def test_release_workflow_runs_on_version_tags_and_checks_the_version():
+def load_release_workflow():
     from pathlib import Path
 
     import yaml
 
     path = Path(__file__).parent.parent / ".github" / "workflows" / "release.yml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    triggers = data[True]  # PyYAML reads the `on` key as True
-    assert triggers == {"push": {"tags": ["v*"]}}
-    assert data["permissions"] == {"contents": "write"}
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
+
+def test_release_workflow_runs_on_version_tags_and_checks_the_version():
+    data = load_release_workflow()
+    assert data[True] == {"push": {"tags": ["v*"]}}  # PyYAML reads the `on` key as True
     runs = [step.get("run", "") for step in data["jobs"]["release"]["steps"]]
     version_check = next(r for r in runs if "__version__" in r)
     assert '"v$version" != "$GITHUB_REF_NAME"' in version_check
     # Tests must run before anything is published.
     assert runs.index("python -m pytest -q") < next(i for i, r in enumerate(runs) if "gh release create" in r)
+
+
+def test_release_permissions_are_per_job_and_minimal():
+    data = load_release_workflow()
+    assert data["permissions"] == {"contents": "read"}
+    assert data["jobs"]["release"]["permissions"] == {"contents": "write"}
+    assert data["jobs"]["pypi"]["permissions"] == {"id-token": "write"}
+
+
+def test_pypi_publishing_is_opt_in_and_publishes_the_tested_build():
+    pypi = load_release_workflow()["jobs"]["pypi"]
+    assert pypi["if"] == "vars.PUBLISH_TO_PYPI == 'true'"
+    assert pypi["needs"] == "release"  # only after tests passed and the GitHub release exists
+    assert pypi["environment"] == "pypi"
+    assert pypi["steps"][-1]["uses"].startswith("pypa/gh-action-pypi-publish@")
