@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from pyci_doctor import __version__
-from pyci_doctor.check import WORKFLOW_PATH, Status, check_workflow
+from pyci_doctor import ai
+from pyci_doctor.check import WORKFLOW_PATH, Status, check_workflow, read_exact
 from pyci_doctor.detect import DetectionError, detect
 from pyci_doctor.flaky import (
     FlakyError,
@@ -20,7 +23,11 @@ from pyci_doctor.flaky import (
     run_repeatedly,
     to_dict,
 )
-from pyci_doctor.render import RenderError, render_workflow
+from pyci_doctor.render import HEADER_PREFIX, RenderError, render_workflow
+
+# First line of a workflow written by `suggest --write`. It deliberately doesn't start with
+# HEADER_PREFIX, so `check` treats the file as hand-maintained from then on.
+AI_HEADER = "# Based on pyci-doctor output, with AI-suggested changes that passed its checks. Maintained by hand."
 
 # Exit codes for `check`, so a CI step or script can tell the cases apart.
 EXIT_OK = 0
@@ -91,10 +98,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     flaky_cmd.add_argument("--json", action="store_true", help="Print the result as JSON.")
 
+    suggest_cmd = subcommands.add_parser(
+        "suggest", help="Ask an AI model for workflow improvements and check them before use."
+    )
+    suggest_cmd.add_argument("path", nargs="?", default=".", help="Project folder (default: current folder).")
+    suggest_cmd.add_argument(
+        "--write", action="store_true", help="Write the suggestion to ci.yml if every check passes."
+    )
+    suggest_cmd.add_argument(
+        "--model",
+        default=os.environ.get("PYCI_DOCTOR_MODEL", ai.DEFAULT_MODEL),
+        help=f"Model name (default: $PYCI_DOCTOR_MODEL or {ai.DEFAULT_MODEL}).",
+    )
+    suggest_cmd.add_argument("--json", action="store_true", help="Print the result as JSON.")
+
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, client: ai.Client | None = None) -> int:
+    """`client` lets tests supply a fake model; normally it's built from ANTHROPIC_API_KEY."""
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -102,6 +124,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_detect(args.path, as_json=args.json)
     if args.command == "check":
         return _run_check(args.path, strict=args.strict)
+    if args.command == "suggest":
+        return _run_suggest(args.path, write=args.write, model=args.model, as_json=args.json, client=client)
     if args.command == "flaky":
         return _run_flaky(args.results, runs=args.runs, out=args.out, as_json=args.json)
     if args.command == "init":
@@ -216,3 +240,88 @@ def _run_flaky(results: list[str], runs: int | None, out: str, as_json: bool) ->
 
     problems = any(h.category in ("flaky", "stable-fail") for h in histories)
     return EXIT_PROBLEM_FOUND if problems else EXIT_OK
+
+
+def _run_suggest(path: str, write: bool, model: str, as_json: bool, client: ai.Client | None) -> int:
+
+    target = Path(path) / WORKFLOW_PATH
+    try:
+        profile = detect(path)
+        current = read_exact(target).replace("\r\n", "\n") if target.is_file() else render_workflow(profile)
+        if client is None:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise ai.SuggestError("Set the ANTHROPIC_API_KEY environment variable to use suggest.")
+            client = ai.anthropic_client(api_key, model=model)
+        result = ai.suggest(profile, current, client)
+    except (DetectionError, RenderError, ai.SuggestError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_CANNOT_CHECK
+
+    if result.error:
+        print(f"error: {result.error}", file=sys.stderr)
+        return EXIT_CANNOT_CHECK
+
+    diff = "".join(
+        difflib.unified_diff(
+            current.splitlines(keepends=True),
+            result.suggestion.workflow.splitlines(keepends=True),
+            fromfile="ci.yml (current)",
+            tofile="ci.yml (suggested)",
+        )
+    )
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "accepted": result.accepted,
+                    "unchanged": result.unchanged,
+                    "changes": result.suggestion.changes,
+                    "checks": [r.__dict__ for r in result.rules],
+                    "diff": diff,
+                },
+                indent=2,
+            )
+        )
+    else:
+        _print_suggestion(result, diff)
+
+    if result.unchanged:
+        return EXIT_OK
+    if not result.accepted:
+        return EXIT_PROBLEM_FOUND
+
+    if write:
+        body = "".join(
+            line
+            for line in result.suggestion.workflow.splitlines(keepends=True)
+            if not line.startswith(HEADER_PREFIX)  # a kept generator header would confuse `check`
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{AI_HEADER}\n{body}", encoding="utf-8", newline="\n")
+        print(f"Wrote {target}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _print_suggestion(result: ai.SuggestResult, diff: str) -> None:
+    # Plain ASCII labels: the Windows PowerShell 5.1 console can't print symbols like a check mark.
+    if result.unchanged:
+        print("The model suggested no changes.")
+        return
+    print("Suggested changes:")
+    for change in result.suggestion.changes:
+        print(f"  - {change.get('summary', '')}: {change.get('reason', '')}")
+    print()
+    print("Checks:")
+    for rule in result.rules:
+        label = "PASS" if rule.passed else ("WARN" if rule.severity == "warning" else "FAIL")
+        print(f"  {label}  {rule.rule:28} {rule.message}")
+    print()
+    sys.stdout.write(diff)
+    print()
+    failed = [r for r in result.rules if not r.passed and r.severity == "error"]
+    if failed:
+        print(f"Rejected: {len(failed)} check(s) failed. Nothing was written.")
+    else:
+        print("Accepted: every check passed. Use --write to save it, or copy what you want from the diff.")

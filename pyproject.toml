@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyyaml>=6"]
+ai = ["pyyaml>=6"]
 
 [project.scripts]
 pyci-doctor = "pyci_doctor.cli:main"

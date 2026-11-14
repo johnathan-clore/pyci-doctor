@@ -35,3 +35,24 @@ def test_runs_as_module_in_a_real_subprocess():
     )
     assert result.returncode == 0
     assert result.stdout.strip() == f"pyci-doctor {__version__}"
+
+
+# --- The release workflow (.github/workflows/release.yml) ---
+
+
+def test_release_workflow_runs_on_version_tags_and_checks_the_version():
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(__file__).parent.parent / ".github" / "workflows" / "release.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    triggers = data[True]  # PyYAML reads the `on` key as True
+    assert triggers == {"push": {"tags": ["v*"]}}
+    assert data["permissions"] == {"contents": "write"}
+
+    runs = [step.get("run", "") for step in data["jobs"]["release"]["steps"]]
+    version_check = next(r for r in runs if "__version__" in r)
+    assert '"v$version" != "$GITHUB_REF_NAME"' in version_check
+    # Tests must run before anything is published.
+    assert runs.index("python -m pytest -q") < next(i for i, r in enumerate(runs) if "gh release create" in r)
