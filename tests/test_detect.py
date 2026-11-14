@@ -24,6 +24,7 @@ def test_src_layout_pytest_project():
     assert profile.dependency_source == "pyproject"
     assert profile.install_command == 'python -m pip install -e ".[dev]"'
     assert profile.test_runner == "pytest"
+    assert profile.test_command == "python -m pytest -v"
     assert profile.python_versions == ["3.11", "3.12", "3.13", "3.14"]
     assert profile.has_ruff is True
     assert profile.has_coverage is True
@@ -46,6 +47,7 @@ def test_flat_requirements_project():
 def test_unittest_project_with_upper_python_bound():
     profile = detect(FIXTURES / "unittest_only")
     assert profile.test_runner == "unittest"
+    assert profile.test_command == "python -m unittest discover -s tests -v"
     assert profile.install_command == "python -m pip install -e ."
     assert profile.python_versions == ["3.10", "3.11", "3.12"]
     assert profile.has_ruff is False
@@ -57,6 +59,7 @@ def test_project_with_nothing_to_install_or_test():
     assert profile.dependency_source == "none"
     assert profile.install_command == ""
     assert profile.test_runner == "none"
+    assert profile.test_command == ""
     assert "No tests found." in profile.warnings
 
 
@@ -138,7 +141,9 @@ def test_requirement_names_are_normalised(tmp_path):
 
 def test_test_files_named_with_test_suffix_are_found(tmp_path):
     write(tmp_path / "pkg" / "math_test.py", "def test_x():\n    pass\n")
-    assert detect(tmp_path).test_runner == "unittest"
+    profile = detect(tmp_path)
+    assert profile.test_runner == "unittest"
+    assert profile.test_command == "python -m unittest discover -v"  # no tests/ folder
 
 
 # --- requires-python parsing ---

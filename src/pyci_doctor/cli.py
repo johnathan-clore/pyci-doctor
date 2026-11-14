@@ -6,9 +6,13 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from pyci_doctor import __version__
 from pyci_doctor.detect import DetectionError, detect
+from pyci_doctor.render import RenderError, render_workflow
+
+WORKFLOW_PATH = Path(".github") / "workflows" / "ci.yml"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +29,18 @@ def build_parser() -> argparse.ArgumentParser:
     detect_cmd.add_argument("path", nargs="?", default=".", help="Project folder (default: current folder).")
     detect_cmd.add_argument("--json", action="store_true", help="Print the result as JSON.")
 
+    init_cmd = subcommands.add_parser("init", help="Write .github/workflows/ci.yml for a project.")
+    init_cmd.add_argument("path", nargs="?", default=".", help="Project folder (default: current folder).")
+    init_cmd.add_argument(
+        "--all-pythons",
+        action="store_true",
+        help="Test every supported Python version, not just the oldest and newest.",
+    )
+    init_cmd.add_argument("--force", action="store_true", help="Overwrite an existing ci.yml.")
+    init_cmd.add_argument(
+        "--stdout", action="store_true", help="Print the workflow instead of writing the file."
+    )
+
     return parser
 
 
@@ -34,6 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "detect":
         return _run_detect(args.path, as_json=args.json)
+    if args.command == "init":
+        return _run_init(args.path, all_pythons=args.all_pythons, force=args.force, to_stdout=args.stdout)
 
     parser.print_help()
     return 0
@@ -58,4 +76,31 @@ def _run_detect(path: str, as_json: bool) -> int:
         print(f"{key:18} {value}")
     for warning in profile.warnings:
         print(f"warning: {warning}")
+    return 0
+
+
+def _run_init(path: str, all_pythons: bool, force: bool, to_stdout: bool) -> int:
+    try:
+        profile = detect(path)
+        workflow = render_workflow(profile, all_pythons=all_pythons)
+    except (DetectionError, RenderError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    for warning in profile.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+    if to_stdout:
+        sys.stdout.write(workflow)
+        return 0
+
+    target = Path(path) / WORKFLOW_PATH
+    if target.exists() and not force:
+        print(f"error: {target} already exists; use --force to overwrite it.", file=sys.stderr)
+        return 1
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # newline="\n" stops Windows from writing CRLF line endings, so the file is identical on every OS.
+    target.write_text(workflow, encoding="utf-8", newline="\n")
+    print(f"Wrote {target}")
     return 0

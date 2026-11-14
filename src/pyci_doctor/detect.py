@@ -28,6 +28,7 @@ class ProjectProfile:
     dependency_source: str  # "pyproject", "requirements" or "none"
     install_command: str
     test_runner: str  # "pytest", "unittest" or "none"
+    test_command: str
     python_versions: list[str]
     has_ruff: bool
     has_coverage: bool
@@ -108,6 +109,7 @@ def detect(project_dir: str | Path) -> ProjectProfile:
         dependency_source=dependency_source,
         install_command=install_command,
         test_runner=test_runner,
+        test_command=_test_command(root, test_runner),
         python_versions=python_versions,
         has_ruff=has_ruff,
         has_coverage=has_coverage,
@@ -175,6 +177,18 @@ def _detect_test_runner(root: Path, tool_table: dict, deps: set[str]) -> str:
     if _has_test_files(root):
         return "unittest"
     return "none"
+
+
+def _test_command(root: Path, test_runner: str) -> str:
+    if test_runner == "pytest":
+        return "python -m pytest -v"
+    if test_runner == "unittest":
+        # Bare `unittest discover` finds nothing in a tests/ folder without an __init__.py on
+        # newer Pythons (3.13 runs 0 tests; 3.11 finds them). Pointing it at tests/ works on all.
+        if (root / "tests").is_dir():
+            return "python -m unittest discover -s tests -v"
+        return "python -m unittest discover -v"
+    return ""
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:
