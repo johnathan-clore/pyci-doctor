@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Test every supported Python version, not just the oldest and newest.",
     )
+    init_cmd.add_argument(
+        "--flaky-runs",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Add a job that runs the tests N times and reports flaky tests (pytest only).",
+    )
     init_cmd.add_argument("--force", action="store_true", help="Overwrite an existing ci.yml.")
     init_cmd.add_argument(
         "--stdout", action="store_true", help="Print the workflow instead of writing the file."
@@ -98,7 +105,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "flaky":
         return _run_flaky(args.results, runs=args.runs, out=args.out, as_json=args.json)
     if args.command == "init":
-        return _run_init(args.path, all_pythons=args.all_pythons, force=args.force, to_stdout=args.stdout)
+        return _run_init(
+            args.path,
+            all_pythons=args.all_pythons,
+            flaky_runs=args.flaky_runs,
+            force=args.force,
+            to_stdout=args.stdout,
+        )
 
     parser.print_help()
     return 0
@@ -126,10 +139,10 @@ def _run_detect(path: str, as_json: bool) -> int:
     return 0
 
 
-def _run_init(path: str, all_pythons: bool, force: bool, to_stdout: bool) -> int:
+def _run_init(path: str, all_pythons: bool, flaky_runs: int, force: bool, to_stdout: bool) -> int:
     try:
         profile = detect(path)
-        workflow = render_workflow(profile, all_pythons=all_pythons)
+        workflow = render_workflow(profile, all_pythons=all_pythons, flaky_runs=flaky_runs)
     except (DetectionError, RenderError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

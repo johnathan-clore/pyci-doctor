@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 
 from pyci_doctor.detect import detect
-from pyci_doctor.render import ALL_PYTHONS_FLAG, HEADER_PREFIX, render_workflow
+from pyci_doctor.render import HEADER_PREFIX, options_from_header, render_workflow
 
 WORKFLOW_PATH = Path(".github") / "workflows" / "ci.yml"
 
@@ -56,8 +56,8 @@ def check_workflow(project_dir: str | Path, strict: bool = False) -> CheckResult
         return CheckResult(Status.NOT_GENERATED, path)
 
     # Regenerate with the same options the file was created with (recorded in its header).
-    all_pythons = generated and ALL_PYTHONS_FLAG in first_line
-    expected = render_workflow(detect(root), all_pythons=all_pythons)
+    options = options_from_header(first_line) if generated else {}
+    expected = render_workflow(detect(root), **options)
 
     if current == expected:
         return CheckResult(Status.UP_TO_DATE, path)

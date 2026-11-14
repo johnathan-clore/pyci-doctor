@@ -128,3 +128,8 @@ def test_check_command_exits_2_when_project_cannot_be_inspected(project, capsys)
 
 def test_this_repo_passes_its_own_check():
     assert main(["check", str(REPO_ROOT)]) == EXIT_OK
+
+
+def test_flaky_runs_option_is_remembered_through_the_header(project):
+    assert main(["init", str(project), "--force", "--flaky-runs", "4"]) == EXIT_OK
+    assert check_workflow(project).status is Status.UP_TO_DATE
