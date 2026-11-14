@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 
 from pyci_doctor.detect import detect
-from pyci_doctor.render import HEADER_PREFIX, options_from_header, render_workflow
+from pyci_doctor.render import HEADER_PREFIX, extract_custom_blocks, options_from_header, render_workflow
 
 WORKFLOW_PATH = Path(".github") / "workflows" / "ci.yml"
 
@@ -57,7 +57,9 @@ def check_workflow(project_dir: str | Path, strict: bool = False) -> CheckResult
 
     # Regenerate with the same options the file was created with (recorded in its header).
     options = options_from_header(first_line) if generated else {}
-    expected = render_workflow(detect(root), **options)
+    # Custom sections are the user's: compare everything else, keeping their content as it is.
+    custom = extract_custom_blocks(current.replace("\r\n", "\n"))
+    expected = render_workflow(detect(root), custom=custom, **options)
 
     if current == expected:
         return CheckResult(Status.UP_TO_DATE, path)

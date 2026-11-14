@@ -53,6 +53,68 @@ class RenderError(Exception):
     """The profile doesn't contain enough to build a useful workflow."""
 
 
+# --- Custom sections: where users add their own steps and jobs ---
+#
+# Every generated job ends with a marked section, and the workflow ends with one for extra jobs:
+#
+#       # >>> custom steps (test): pyci-doctor keeps anything between these lines
+#       - name: Build the report
+#         run: python -m evals.report
+#       # <<< custom steps (test)
+#
+# `init --force` copies these sections into the new file unchanged, and `check` compares
+# everything outside them, so a project can customise its CI and still be checked for drift.
+
+CustomBlocks = dict[str, list[str]]  # section name ("test", "lint", "flaky" or "jobs") -> its lines
+
+_MARKER_NAME = r"(?:steps \((?P<job>[\w-]+)\)|(?P<jobs>jobs))"
+_START_RE = re.compile(rf"^\s*# >>> custom {_MARKER_NAME}:")
+_END_RE = re.compile(rf"^\s*# <<< custom {_MARKER_NAME}\s*$")
+
+
+def _section_label(name: str) -> str:
+    return "custom jobs" if name == "jobs" else f"custom steps ({name})"
+
+
+def _custom_section(name: str, custom: CustomBlocks) -> list[str]:
+    indent = "  " if name == "jobs" else "      "
+    label = _section_label(name)
+    return [
+        "",
+        f"{indent}# >>> {label}: pyci-doctor keeps anything between these lines",
+        *custom.get(name, []),
+        f"{indent}# <<< {label}",
+    ]
+
+
+def extract_custom_blocks(workflow: str) -> CustomBlocks:
+    """Read the custom sections back out of a workflow file."""
+    blocks: CustomBlocks = {}
+    current: str | None = None
+    for number, line in enumerate(workflow.splitlines(), start=1):
+        start, end = _START_RE.match(line), _END_RE.match(line)
+        if start:
+            if current is not None:
+                raise RenderError(
+                    f"Line {number}: a custom section starts before '{current}' has ended "
+                    f"(is the '# <<< ...' end marker for '{current}' missing?)."
+                )
+            current = start.group("job") or "jobs"
+            if current in blocks:
+                raise RenderError(f"Line {number}: there are two custom sections for '{current}'.")
+            blocks[current] = []
+        elif end:
+            name = end.group("job") or "jobs"
+            if current != name:
+                raise RenderError(f"Line {number}: end marker for '{name}' doesn't match an open section.")
+            current = None
+        elif current is not None:
+            blocks[current].append(line)
+    if current is not None:
+        raise RenderError(f"The custom section for '{current}' is never closed.")
+    return blocks
+
+
 def matrix_pythons(profile: ProjectProfile, all_pythons: bool = False) -> list[str]:
     """Oldest and newest supported version by default; every supported version with all_pythons."""
     versions = profile.python_versions
@@ -78,7 +140,13 @@ def _cache_lines(profile: ProjectProfile) -> list[str]:
     ]
 
 
-def render_workflow(profile: ProjectProfile, all_pythons: bool = False, flaky_runs: int = 0) -> str:
+def render_workflow(
+    profile: ProjectProfile,
+    all_pythons: bool = False,
+    flaky_runs: int = 0,
+    custom: CustomBlocks | None = None,
+) -> str:
+    custom = custom or {}
     if profile.test_runner == "none" and not profile.has_ruff:
         raise RenderError("No tests or linter found, so CI would have nothing to run.")
     if flaky_runs and profile.test_runner != "pytest":
@@ -139,6 +207,7 @@ def render_workflow(profile: ProjectProfile, all_pythons: bool = False, flaky_ru
         lines += [
             "      - name: Run tests",
             f"        run: {profile.test_command}",
+            *_custom_section("test", custom),
         ]
 
     if profile.has_ruff:
@@ -163,10 +232,28 @@ def render_workflow(profile: ProjectProfile, all_pythons: bool = False, flaky_ru
             "",
             "      - name: Lint",
             "        run: python -m ruff check .",
+            *_custom_section("lint", custom),
         ]
 
     if flaky_runs:
-        lines += ["", *_flaky_job(profile, flaky_runs)]
+        lines += ["", *_flaky_job(profile, flaky_runs), *_custom_section("flaky", custom)]
+
+    lines += _custom_section("jobs", custom)
+
+    # Never drop someone's custom steps silently, e.g. lint steps when ruff is no longer used.
+    emitted = {"jobs"}
+    if profile.test_runner != "none":
+        emitted.add("test")
+    if profile.has_ruff:
+        emitted.add("lint")
+    if flaky_runs:
+        emitted.add("flaky")
+    orphaned = sorted(name for name, body in custom.items() if name not in emitted and body)
+    if orphaned:
+        raise RenderError(
+            f"The new workflow has no job for the custom steps in: {', '.join(orphaned)}. "
+            "Move those steps to another custom section first, so they aren't lost."
+        )
 
     return "\n".join(lines) + "\n"
 

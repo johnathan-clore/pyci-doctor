@@ -42,6 +42,9 @@ jobs:
       - name: Run tests
         run: python -m pytest -v
 
+      # >>> custom steps (test): pyci-doctor keeps anything between these lines
+      # <<< custom steps (test)
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -59,3 +62,9 @@ jobs:
 
       - name: Lint
         run: python -m ruff check .
+
+      # >>> custom steps (lint): pyci-doctor keeps anything between these lines
+      # <<< custom steps (lint)
+
+  # >>> custom jobs: pyci-doctor keeps anything between these lines
+  # <<< custom jobs

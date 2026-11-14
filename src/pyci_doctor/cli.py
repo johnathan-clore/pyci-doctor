@@ -23,7 +23,7 @@ from pyci_doctor.flaky import (
     run_repeatedly,
     to_dict,
 )
-from pyci_doctor.render import HEADER_PREFIX, RenderError, render_workflow
+from pyci_doctor.render import HEADER_PREFIX, RenderError, extract_custom_blocks, render_workflow
 
 # First line of a workflow written by `suggest --write`. It deliberately doesn't start with
 # HEADER_PREFIX, so `check` treats the file as hand-maintained from then on.
@@ -164,9 +164,12 @@ def _run_detect(path: str, as_json: bool) -> int:
 
 
 def _run_init(path: str, all_pythons: bool, flaky_runs: int, force: bool, to_stdout: bool) -> int:
+    target = Path(path) / WORKFLOW_PATH
     try:
         profile = detect(path)
-        workflow = render_workflow(profile, all_pythons=all_pythons, flaky_runs=flaky_runs)
+        # Keep the custom sections of an existing workflow (only relevant with --force or --stdout).
+        custom = extract_custom_blocks(read_exact(target).replace("\r\n", "\n")) if target.is_file() else {}
+        workflow = render_workflow(profile, all_pythons=all_pythons, flaky_runs=flaky_runs, custom=custom)
     except (DetectionError, RenderError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -178,7 +181,6 @@ def _run_init(path: str, all_pythons: bool, flaky_runs: int, force: bool, to_std
         sys.stdout.write(workflow)
         return 0
 
-    target = Path(path) / WORKFLOW_PATH
     if target.exists() and not force:
         print(f"error: {target} already exists; use --force to overwrite it.", file=sys.stderr)
         return 1
